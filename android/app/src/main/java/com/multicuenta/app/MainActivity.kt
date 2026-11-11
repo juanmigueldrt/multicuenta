@@ -1315,7 +1315,9 @@ class MainActivity : AppCompatActivity() {
     '[data-testid="confirm-popup"] *{max-width:calc(100vw - 32px)!important;box-sizing:border-box}',
     '[data-testid="drawer-fullscreen"],[data-testid="drawer-right"]{left:0!important;width:100vw!important;max-width:100vw!important}',
     '[data-testid="drawer-left"],[data-testid="drawer-middle"]{border-left:0!important;left:0!important;width:100vw!important;max-width:100vw!important;min-width:0!important}',
-    'div:has(> #side){padding-left:0!important;border:0!important;box-shadow:none!important}'
+    'div:has(> #side){padding-left:0!important;border:0!important;box-shadow:none!important}',
+    // Emoji panel is a fixed 12-column popover (560px) centred on its button: pin it left, fit the width
+    '#expressions-panel-container > span > div{left:0!important;transform:scale(var(--mc-ez,1))!important;transform-origin:left bottom!important}'
   ].join('\n');
   function layout(mobile){
     var m = q('meta[name=viewport]');
@@ -1323,11 +1325,52 @@ class MainActivity : AppCompatActivity() {
     // Login page stays desktop-sized (zoomed to fit) for the "show page" fallback
     var vp = mobile ? 'width=device-width, initial-scale=1' : 'width=900';
     if (m.content !== vp) m.content = vp;
+    // shortcut: 560 is WhatsApp's emoji panel width today; measure the panel if it changes
+    document.documentElement.style.setProperty('--mc-ez', String(Math.min(1, innerWidth / 560)));
     var st = document.getElementById('mc-mobile');
     if (mobile && !st) {
       st = document.createElement('style'); st.id = 'mc-mobile'; st.textContent = MOBILE_CSS;
       document.documentElement.appendChild(st);
     } else if (!mobile && st) { st.remove(); }
+  }
+  // WhatsApp closes its emoji panel when the window resizes, and the soft keyboard resizes it
+  // (the panel focuses its search box, which opens the keyboard). Like the native app, the
+  // panel replaces the keyboard: inputmode=none while it is open, and when the keyboard was
+  // up, the click waits until it has gone. Tapping a text field brings the keyboard back.
+  if (svc === 'whatsapp') {
+    var quiet = false, held = null;
+    var editable = function(t){ return t && t.closest ? t.closest('[contenteditable=true], input, textarea') : null; };
+    var emojiButton = function(t){
+      var b = t && t.closest ? t.closest('#main footer button') : null;
+      return b && /emoji/i.test(b.getAttribute('aria-label') || '') ? b : null;
+    };
+    document.addEventListener('pointerdown', function(e){
+      var ed = editable(e.target);
+      if (ed) { quiet = false; ed.removeAttribute('inputmode'); return; }
+      var b = emojiButton(e.target);
+      if (!b) return;
+      quiet = !q('#expressions-panel-container input');
+      var typing = !!editable(document.activeElement);
+      document.querySelectorAll('#main footer [contenteditable=true]').forEach(function(c){
+        if (quiet) c.setAttribute('inputmode', 'none'); else c.removeAttribute('inputmode');
+      });
+      if (quiet && typing) held = b;
+    }, true);
+    document.addEventListener('click', function(e){
+      if (!held || emojiButton(e.target) !== held) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      var b = held, h = innerHeight, n = 0;
+      held = null;
+      var t = setInterval(function(){
+        n++;
+        if ((innerHeight === h && n > 2) || n > 12) { clearInterval(t); b.click(); }
+        h = innerHeight;
+      }, 60);
+    }, true);
+    document.addEventListener('focusin', function(e){
+      var ed = editable(e.target);
+      if (quiet && ed) ed.setAttribute('inputmode', 'none');
+    }, true);
   }
   window.__mcPoll = setInterval(function(){
     try {
