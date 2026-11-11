@@ -290,6 +290,7 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER
                 addView(indicator, LinearLayout.LayoutParams(dp(64), dp(32)))
                 addView(text(label, 12f, if (selected) ON_SURFACE else ON_SURFACE_VARIANT, medium = true).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
                     setPadding(0, dp(4), 0, 0)
                 })
                 contentDescription = label
