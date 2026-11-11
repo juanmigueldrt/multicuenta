@@ -70,7 +70,13 @@ class MainActivity : AppCompatActivity() {
     private enum class PhoneStage { FORM, WAITING, WEB }
 
     /** What the account's web page reports through [Bridge]: login state, QR image, pairing code. */
-    private data class PageState(val logged: Boolean, val loginPage: Boolean, val qr: String?, val code: String?)
+    private data class PageState(
+        val logged: Boolean,
+        val loginPage: Boolean,
+        val qr: String?,
+        val code: String?,
+        val chatOpen: Boolean = false,
+    )
 
     private val pageState = mutableMapOf<String, PageState>()
     private val qrBitmaps = mutableMapOf<String, Bitmap>()
@@ -79,6 +85,7 @@ class MainActivity : AppCompatActivity() {
     private var linkPhone = ""
     private var linkShowWeb = false
     private var resumed = false
+    private var imeVisible = false
 
     private lateinit var store: AccountStore
     private val accounts = mutableListOf<Account>()
@@ -187,6 +194,11 @@ class MainActivity : AppCompatActivity() {
                     WindowInsetsCompat.Type.ime()
             )
             v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            val ime = insets.isVisible(WindowInsetsCompat.Type.ime())
+            if (ime != imeVisible) {
+                imeVisible = ime
+                applyChrome()
+            }
             WindowInsetsCompat.CONSUMED
         }
 
@@ -296,7 +308,21 @@ class MainActivity : AppCompatActivity() {
             }
         }
         renderBottomNav()
+        applyChrome()
         syncFocus()
+    }
+
+    /**
+     * Like the native apps: an open conversation gets the whole screen (no app bars or chips),
+     * and the bottom navigation hides while the keyboard is up.
+     */
+    private fun applyChrome() {
+        val conversation = screen == Screen.CHATS && pageState[activeId]?.chatOpen == true
+        topBar.visibility = if (conversation) View.GONE else View.VISIBLE
+        chipsScroll.visibility =
+            if (screen == Screen.CHATS && !conversation && accounts.size > 1) View.VISIBLE else View.GONE
+        bottomNav.visibility =
+            if (screen == Screen.LINK || conversation || imeVisible) View.GONE else View.VISIBLE
     }
 
     /** Tells every page whether the user is looking at it (see __mcSetActive in NOTIFICATION_JS). */
@@ -679,6 +705,7 @@ class MainActivity : AppCompatActivity() {
             o.optBoolean("loginPage"),
             o.optString("qr").takeIf { it.startsWith("data:image") },
             o.optString("code").takeIf { it.isNotBlank() && it != "null" },
+            o.optBoolean("chat"),
         )
         val prev = pageState[id]
         if (prev == next) return
@@ -688,6 +715,7 @@ class MainActivity : AppCompatActivity() {
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { qrBitmaps[id] = it }
         }
         if (next.logged != prev?.logged) setStatus(id, if (next.logged) Status.ACTIVE else null)
+        if (next.chatOpen != prev?.chatOpen && id == activeId) applyChrome()
         val acc = accounts.firstOrNull { it.id == id } ?: return
         when {
             screen == Screen.LINK && linkingId == id && !linkShowWeb -> renderLink(acc)
@@ -1279,7 +1307,7 @@ class MainActivity : AppCompatActivity() {
   var MOBILE_CSS = [
     'html,body{min-width:0!important;overflow:hidden}',
     'header[data-testid="chatlist-header"]{display:none!important}',
-    'div:has(> div > #side){min-width:0!important;width:100vw!important;max-width:100vw!important}',
+    'div:has(> div > #side){min-width:0!important;min-height:0!important;width:100vw!important;max-width:100vw!important}',
     'div:has(> #side), div:has(> #side) + div{flex:0 0 100vw!important;width:100vw!important;max-width:100vw!important;min-width:0!important}',
     'html:not(:has(#main)) div:has(> #side) + div{display:none!important}',
     'html:has(#main) div:has(> #side){display:none!important}',
@@ -1303,7 +1331,7 @@ class MainActivity : AppCompatActivity() {
   }
   window.__mcPoll = setInterval(function(){
     try {
-      var s = { logged: false, loginPage: false, qr: null, code: null };
+      var s = { logged: false, loginPage: false, qr: null, code: null, chat: !!q('#main') };
       var c = q('[data-link-code]');
       if (c) s.code = c.getAttribute('data-link-code');
       var cv = q('canvas');
