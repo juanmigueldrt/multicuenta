@@ -231,11 +231,13 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         resumed = true
+        syncFocus()
         if (screen == Screen.SETTINGS) renderSettings() // battery permission may have changed
     }
 
     override fun onPause() {
         resumed = false
+        syncFocus()
         super.onPause()
     }
 
@@ -294,6 +296,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
         renderBottomNav()
+        syncFocus()
+    }
+
+    /** Tells every page whether the user is looking at it (see __mcSetActive in NOTIFICATION_JS). */
+    private fun syncFocus() {
+        val visibleId = if (resumed && screen == Screen.CHATS) activeId else null
+        views.forEach { (id, v) ->
+            (v as? WebView)?.evaluateJavascript("window.__mcSetActive && window.__mcSetActive(${id == visibleId});", null)
+        }
     }
 
     private fun ensureView(acc: Account): View = views.getOrPut(acc.id) {
@@ -311,6 +322,7 @@ class MainActivity : AppCompatActivity() {
             store.activeId = acc.id
         }
         renderChips()
+        syncFocus()
     }
 
     // ---------------------------------------------------------------- bars
@@ -940,6 +952,7 @@ class MainActivity : AppCompatActivity() {
                     view.evaluateJavascript(NOTIFICATION_JS, null)
                 }
                 view.evaluateJavascript("($PAGE_JS)(${JSONObject.quote(acc.service.id)});", null)
+                syncFocus()
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
@@ -1189,6 +1202,16 @@ class MainActivity : AppCompatActivity() {
          */
         private const val NOTIFICATION_JS = """(function(){
   if (window.__mcNotify) return; window.__mcNotify = true;
+  // A WebView keeps reporting focus while the app is in the background or the page is behind
+  // another screen. WhatsApp then treats new messages as seen: no notification, marked read.
+  // The app tells each page when it is really in front (__mcSetActive), and hasFocus follows.
+  var active = false;
+  Document.prototype.hasFocus = function(){ return active && document.visibilityState === 'visible'; };
+  window.__mcSetActive = function(a){
+    a = !!a; if (a === active) return; active = a;
+    window.dispatchEvent(new FocusEvent(a ? 'focus' : 'blur'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
   function send(title, opts){
     opts = opts || {};
     try { MulticuentaBridge.notify(String(title || ''), String(opts.body || ''), String(opts.tag || '')); } catch (e) {}
