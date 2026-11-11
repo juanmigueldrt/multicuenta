@@ -15,7 +15,8 @@ import androidx.core.app.ServiceCompat
 
 /** Native notifications for messages reported by the web pages (see NOTIFICATION_JS). */
 object Notifications {
-    private const val MESSAGES = "messages"
+    // v2: channels can't change after creation; this one adds vibration like the real apps
+    private const val MESSAGES = "messages_v2"
     private const val CONNECTION = "connection"
     const val EXTRA_ACCOUNT = "account"
 
@@ -23,8 +24,13 @@ object Notifications {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(MESSAGES, "Mensajes", NotificationManager.IMPORTANCE_HIGH)
-                .apply { description = "Mensajes nuevos de WhatsApp y Telegram" }
+                .apply {
+                    description = "Mensajes nuevos de WhatsApp y Telegram"
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 250, 150, 250)
+                }
         )
+        nm.deleteNotificationChannel("messages") // replaced by messages_v2
         nm.createNotificationChannel(
             NotificationChannel(CONNECTION, "Conexión en segundo plano", NotificationManager.IMPORTANCE_MIN)
                 .apply { description = "Mantiene las cuentas conectadas para recibir mensajes" }
