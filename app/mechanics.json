@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "values": [
+    {
+      "name": "error_mode_flags",
+      "group": "runtime",
+      "value": 32769,
+      "unit": "flags",
+      "source": "function 0x40338f"
+    },
+    {
+      "name": "temp_path_buffer_chars",
+      "group": "storage",
+      "value": 8192,
+      "unit": "chars",
+      "source": "function 0x40338f"
+    },
+    {
+      "name": "temp_drive_retry_count",
+      "group": "storage",
+      "value": 26,
+      "unit": "count",
+      "source": "function 0x40338f"
+    },
+    {
+      "name": "splash_delay_ms",
+      "group": "timing",
+      "value": 1000,
+      "unit": "ms",
+      "source": "function 0x402edd"
+    },
+    {
+      "name": "header_scan_step_bytes",
+      "group": "archive",
+      "value": 512,
+      "unit": "bytes",
+      "source": "function 0x402edd"
+    },
+    {
+      "name": "header_signature_size",
+      "group": "archive",
+      "value": 28,
+      "unit": "bytes",
+      "source": "function 0x402edd"
+    },
+    {
+      "name": "decompress_buffer_bytes",
+      "group": "archive",
+      "value": 32768,
+      "unit": "bytes",
+      "source": "function 0x403116"
+    },
+    {
+      "name": "chunk_read_bytes",
+      "group": "archive",
+      "value": 16384,
+      "unit": "bytes",
+      "source": "function 0x403116"
+    },
+    {
+      "name": "progress_refresh_ms",
+      "group": "timing",
+      "value": 200,
+      "unit": "ms",
+      "source": "function 0x403116"
+    },
+    {
+      "name": "gradient_band_height",
+      "group": "ui",
+      "value": 4,
+      "unit": "px",
+      "source": "function 0x401000"
+    },
+    {
+      "name": "header_text_pad_left",
+      "group": "ui",
+      "value": 16,
+      "unit": "px",
+      "source": "function 0x401000"
+    },
+    {
+      "name": "header_text_pad_top",
+      "group": "ui",
+      "value": 8,
+      "unit": "px",
+      "source": "function 0x401000"
+    },
+    {
+      "name": "string_slot_stride",
+      "group": "memory",
+      "value": 16384,
+      "unit": "bytes",
+      "source": "function 0x401434"
+    },
+    {
+      "name": "max_register_slots",
+      "group": "memory",
+      "value": 32,
+      "unit": "count",
+      "source": "function 0x401434"
+    },
+    {
+      "name": "ui_buffer_capacity",
+      "group": "memory",
+      "value": 65536,
+      "unit": "bytes",
+      "source": "function 0x4039aa"
+    },
+    {
+      "name": "window_width",
+      "group": "layout",
+      "value": 1180,
+      "unit": "px",
+      "estimated": true
+    },
+    {
+      "name": "window_height",
+      "group": "layout",
+      "value": 760,
+      "unit": "px",
+      "estimated": true
+    },
+    {
+      "name": "account_rail_width",
+      "group": "layout",
+      "value": 76,
+      "unit": "px",
+      "estimated": true
+    },
+    {
+      "name": "chat_list_width",
+      "group": "layout",
+      "value": 310,
+      "unit": "px",
+      "estimated": true
+    },
+    {
+      "name": "info_panel_width",
+      "group": "layout",
+      "value": 260,
+      "unit": "px",
+      "estimated": true
+    },
+    {
+      "name": "session_isolation",
+      "group": "sessions",
+      "value": true,
+      "estimated": true
+    },
+    {
+      "name": "session_persistence",
+      "group": "sessions",
+      "value": true,
+      "estimated": true
+    },
+    {
+      "name": "default_session_count",
+      "group": "sessions",
+      "value": 3,
+      "unit": "count",
+      "estimated": true
+    },
+    {
+      "name": "service_mode",
+      "group": "features",
+      "value": "whatsapp_telegram",
+      "estimated": true
+    }
+  ]
+}

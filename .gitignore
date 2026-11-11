@@ -1,0 +1,12 @@
+# Rust build output
+app/target/
+
+# Per-account data: WhatsApp/Telegram logins, cookies, local storage. Never commit.
+app/sessions_data/
+
+# Android / Gradle build output
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
