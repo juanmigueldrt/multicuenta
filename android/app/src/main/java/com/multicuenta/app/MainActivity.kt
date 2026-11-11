@@ -190,12 +190,11 @@ class MainActivity : AppCompatActivity() {
                     Screen.ACCOUNTS, Screen.SETTINGS -> go(Screen.CHATS)
                     Screen.CHATS -> {
                         val wv = activeId?.let { views[it] } as? WebView
-                        if (wv != null && wv.canGoBack()) {
-                            wv.goBack()
+                        val isWhatsApp = accounts.firstOrNull { it.id == activeId }?.service == Service.WHATSAPP
+                        if (wv != null && isWhatsApp) {
+                            wv.evaluateJavascript(CLOSE_CHAT_JS) { closed -> if (closed != "true") exitBack(wv) }
                         } else {
-                            isEnabled = false
-                            onBackPressedDispatcher.onBackPressed()
-                            isEnabled = true
+                            exitBack(wv)
                         }
                     }
                 }
@@ -203,6 +202,14 @@ class MainActivity : AppCompatActivity() {
         })
 
         go(Screen.CHATS)
+    }
+
+    private fun exitBack(wv: WebView?) {
+        if (wv != null && wv.canGoBack()) {
+            wv.goBack()
+        } else {
+            moveTaskToBack(true) // keep the sessions alive in the background, like a messaging app
+        }
     }
 
     override fun onDestroy() {
@@ -868,9 +875,6 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
-                // WhatsApp's desktop page uses width=device-width and gets cut off on a phone.
-                // A fixed layout width lets the wide viewport zoom the whole page to fit.
-                if (acc.service == Service.WHATSAPP) view.evaluateJavascript(FIT_DESKTOP_JS, null)
                 view.evaluateJavascript("($PAGE_JS)(${JSONObject.quote(acc.service.id)});", null)
             }
 
@@ -1150,6 +1154,31 @@ class MainActivity : AppCompatActivity() {
       }
     }, 500);
   };
+  // Logged-in WhatsApp: phone viewport and one pane at a time (chat list, or the open chat),
+  // like the mobile app. Selectors rely on WhatsApp's stable ids (#side, #main) and test ids.
+  var MOBILE_CSS = [
+    'html,body{min-width:0!important;overflow:hidden}',
+    'header[data-testid="chatlist-header"]{display:none!important}',
+    'div:has(> div > #side){min-width:0!important;width:100vw!important;max-width:100vw!important}',
+    'div:has(> #side), div:has(> #side) + div{flex:0 0 100vw!important;width:100vw!important;max-width:100vw!important;min-width:0!important}',
+    'html:not(:has(#main)) div:has(> #side) + div{display:none!important}',
+    'html:has(#main) div:has(> #side){display:none!important}',
+    '[role=dialog]{min-width:0!important;max-width:100vw!important}',
+    '[data-testid="confirm-popup"] *{max-width:calc(100vw - 32px)!important;box-sizing:border-box}',
+    '[data-testid="drawer-fullscreen"],[data-testid="drawer-right"]{left:0!important;width:100vw!important;max-width:100vw!important}'
+  ].join('\n');
+  function layout(mobile){
+    var m = q('meta[name=viewport]');
+    if (!m) { m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
+    // Login page stays desktop-sized (zoomed to fit) for the "show page" fallback
+    var vp = mobile ? 'width=device-width, initial-scale=1' : 'width=900';
+    if (m.content !== vp) m.content = vp;
+    var st = document.getElementById('mc-mobile');
+    if (mobile && !st) {
+      st = document.createElement('style'); st.id = 'mc-mobile'; st.textContent = MOBILE_CSS;
+      document.documentElement.appendChild(st);
+    } else if (!mobile && st) { st.remove(); }
+  }
   window.__mcPoll = setInterval(function(){
     try {
       var s = { logged: false, loginPage: false, qr: null, code: null };
@@ -1161,15 +1190,20 @@ class MainActivity : AppCompatActivity() {
       }
       s.loginPage = !!(s.qr || s.code || (svc !== 'whatsapp' && q('#auth-pages .tabs-tab.active')));
       s.logged = !s.loginPage && !!(svc === 'whatsapp' ? q('#pane-side, #side') : q('#column-left'));
+      if (svc === 'whatsapp') layout(s.logged);
       MulticuentaBridge.post(JSON.stringify(s));
     } catch (e) {}
   }, 1500);
 }"""
-        private const val FIT_DESKTOP_JS = """(function(){
-  var m = document.querySelector('meta[name=viewport]');
-  if (!m) { m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
-  m.content = 'width=900';
-})();"""
+        /** Closes the open WhatsApp chat (Escape, as on desktop); returns false when no chat is open. */
+        private const val CLOSE_CHAT_JS = """(function(){
+  if (!document.querySelector('#main')) return false;
+  var t = document.activeElement || document.body;
+  ['keydown', 'keyup'].forEach(function(k){
+    t.dispatchEvent(new KeyboardEvent(k, {key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true}));
+  });
+  return true;
+})()"""
         private const val DESKTOP_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     }
