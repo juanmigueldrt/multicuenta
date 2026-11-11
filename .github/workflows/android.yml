@@ -31,8 +31,14 @@ jobs:
           echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/signing.p12"
           echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/signing.p12" >> "$GITHUB_ENV"
 
-      - name: Build debug APK
-        run: gradle -p android assembleDebug --no-daemon
+      - name: Build release and debug APKs
+        run: gradle -p android assembleRelease assembleDebug --no-daemon
+
+      # Release is the one to install; debug only for live inspection (debuggable)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multicuenta-apk
+          path: android/app/build/outputs/apk/release/*.apk
 
       - uses: actions/upload-artifact@v4
         with:

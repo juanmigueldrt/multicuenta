@@ -52,8 +52,11 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.ProfileStore
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 
 /**
@@ -132,6 +135,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         store = AccountStore(this)
         if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) WebView.setWebContentsDebuggingEnabled(true)
+        // Chats stay out of the recent-apps thumbnail (screenshots still work)
+        if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(false)
         accounts += store.load()
         activeId = store.activeId?.takeIf { id -> accounts.any { it.id == id } } ?: accounts.firstOrNull()?.id
 
@@ -965,6 +970,10 @@ class MainActivity : AppCompatActivity() {
             // WhatsApp Web only serves desktop browsers; on mobile it redirects to the app store
             if (acc.service == Service.WHATSAPP) userAgentString = DESKTOP_UA
         }
+        // Smoother scrolling: the visible page rasters beyond the viewport (hidden pages are GONE)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.OFF_SCREEN_PRERASTER)) {
+            WebSettingsCompat.setOffscreenPreRaster(wv.settings, true)
+        }
         CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
 
         wv.webViewClient = object : WebViewClient() {
@@ -1034,9 +1043,27 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        wv.addJavascriptInterface(Bridge(acc.id), "MulticuentaBridge")
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        ) {
+            // Only the services' own top frames reach the app; a JavascriptInterface would be
+            // exposed to every frame, embedded third-party iframes included.
+            WebViewCompat.addWebMessageListener(wv, "__mcPort", SERVICE_ORIGINS) { _, message, _, isMainFrame, _ ->
+                if (!isMainFrame) return@addWebMessageListener
+                val a = try {
+                    JSONArray(message.data ?: return@addWebMessageListener)
+                } catch (e: JSONException) {
+                    return@addWebMessageListener
+                }
+                when (a.optString(0)) {
+                    "post" -> onPageState(acc.id, a.optString(1))
+                    "phoneFailed" -> onPhoneFailed(acc.id, a.optString(1))
+                    "notify" -> onWebNotification(acc.id, a.optString(1), a.optString(2), a.optString(3))
+                }
+            }
             WebViewCompat.addDocumentStartJavaScript(wv, NOTIFICATION_JS, SERVICE_ORIGINS)
+        } else {
+            wv.addJavascriptInterface(Bridge(acc.id), "MulticuentaBridge")
         }
         wv.loadUrl(acc.service.url)
         return wv
@@ -1229,6 +1256,15 @@ class MainActivity : AppCompatActivity() {
          * message to MulticuentaBridge.notify, which posts a native Android notification.
          */
         private const val NOTIFICATION_JS = """(function(){
+  // Same calls as the JavascriptInterface fallback, over the origin-checked message port
+  if (window.__mcPort && !window.MulticuentaBridge) {
+    var P = window.__mcPort, m = function(a){ P.postMessage(JSON.stringify(a)); };
+    window.MulticuentaBridge = {
+      post: function(s){ m(['post', String(s)]); },
+      phoneFailed: function(s){ m(['phoneFailed', String(s)]); },
+      notify: function(t, b, g){ m(['notify', String(t), String(b), String(g)]); }
+    };
+  }
   if (window.__mcNotify) return; window.__mcNotify = true;
   // A WebView keeps reporting focus while the app is in the background or the page is behind
   // another screen. WhatsApp then treats new messages as seen: no notification, marked read.

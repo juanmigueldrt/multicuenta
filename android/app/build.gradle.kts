@@ -11,8 +11,8 @@ android {
         applicationId = "com.multicuenta.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     // Same key on every CI build, so a new APK can update the installed one.
@@ -34,8 +34,13 @@ android {
         debug {
             if (keystorePath != null) signingConfig = signingConfigs.getByName("shared")
         }
+        // The build to install: not debuggable (no run-as access to the session data, no remote
+        // WebView debugging), and R8-optimized
         release {
-            isMinifyEnabled = false
+            if (keystorePath != null) signingConfig = signingConfigs.getByName("shared")
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
