@@ -11,7 +11,10 @@ import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.text.Html
 import android.text.InputType
 import android.util.Base64
@@ -75,6 +78,7 @@ class MainActivity : AppCompatActivity() {
     private var phoneStage = PhoneStage.FORM
     private var linkPhone = ""
     private var linkShowWeb = false
+    private var resumed = false
 
     private lateinit var store: AccountStore
     private val accounts = mutableListOf<Account>()
@@ -107,6 +111,9 @@ class MainActivity : AppCompatActivity() {
             fileCallback?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res.resultCode, res.data))
             fileCallback = null
         }
+
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -201,7 +208,35 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        Notifications.createChannels(this)
+        ContextCompat.startForegroundService(this, Intent(this, KeepAliveService::class.java))
+        if (Build.VERSION.SDK_INT >= 33 && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        intent.getStringExtra(Notifications.EXTRA_ACCOUNT)?.let { id -> if (accounts.any { it.id == id }) activeId = id }
         go(Screen.CHATS)
+    }
+
+    /** A notification was tapped while the app was alive: open that account's chats. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val id = intent.getStringExtra(Notifications.EXTRA_ACCOUNT) ?: return
+        if (accounts.any { it.id == id }) {
+            activeId = id
+            go(Screen.CHATS)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+        if (screen == Screen.SETTINGS) renderSettings() // battery permission may have changed
+    }
+
+    override fun onPause() {
+        resumed = false
+        super.onPause()
     }
 
     private fun exitBack(wv: WebView?) {
@@ -620,6 +655,9 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun phoneFailed(step: String) = runOnUiThread { onPhoneFailed(id, step) }
+
+        @JavascriptInterface
+        fun notify(title: String, body: String, tag: String) = runOnUiThread { onWebNotification(id, title, body, tag) }
     }
 
     private fun onPageState(id: String, json: String) {
@@ -644,6 +682,13 @@ class MainActivity : AppCompatActivity() {
             screen == Screen.CHATS && activeId == id &&
                 (next.logged != prev?.logged || next.loginPage != prev?.loginPage) -> go(Screen.CHATS)
         }
+    }
+
+    private fun onWebNotification(id: String, title: String, body: String, tag: String) {
+        val acc = accounts.firstOrNull { it.id == id } ?: return
+        // Like the real apps: no notification for the account you are looking at
+        if (resumed && screen == Screen.CHATS && activeId == id) return
+        Notifications.message(this, acc, title, body, tag)
     }
 
     private fun onPhoneFailed(id: String, step: String) {
@@ -723,6 +768,21 @@ class MainActivity : AppCompatActivity() {
                 if (isolationSupported) "Activos: cada cuenta tiene sus propias cookies y datos"
                 else "No disponibles: actualiza «Android System WebView» para usar varias cuentas del mismo servicio"))
             addView(settingRow("Android System WebView", webViewVersion))
+            val pm = getSystemService(PowerManager::class.java)
+            val unrestricted = pm.isIgnoringBatteryOptimizations(packageName)
+            addView(settingRow(
+                "Funcionar en segundo plano",
+                if (unrestricted) "Sin restricciones de batería: recibirás mensajes con la app cerrada"
+                else "Android puede pausar la app y no recibirías mensajes. Toca para permitirlo",
+            ).apply {
+                if (!unrestricted) setOnClickListener {
+                    try {
+                        startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+                    } catch (e: ActivityNotFoundException) {
+                        startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                    }
+                }
+            })
             addView(settingRow("Cuentas", "${accounts.count { it.service == Service.WHATSAPP }} de WhatsApp · " +
                 "${accounts.count { it.service == Service.TELEGRAM }} de Telegram"))
             addView(settingRow("Versión de Multicuenta", appVersion))
@@ -875,6 +935,10 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
+                // Late fallback for WebViews without document-start scripts
+                if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    view.evaluateJavascript(NOTIFICATION_JS, null)
+                }
                 view.evaluateJavascript("($PAGE_JS)(${JSONObject.quote(acc.service.id)});", null)
             }
 
@@ -930,6 +994,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         wv.addJavascriptInterface(Bridge(acc.id), "MulticuentaBridge")
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(wv, NOTIFICATION_JS, SERVICE_ORIGINS)
+        }
         wv.loadUrl(acc.service.url)
         return wv
     }
@@ -1113,7 +1180,37 @@ class MainActivity : AppCompatActivity() {
         private const val ON_ERROR_CONTAINER = 0xFF410002.toInt()
 
         private val SERVICE_HOSTS = listOf("whatsapp.com", "whatsapp.net", "telegram.org")
+        private val SERVICE_ORIGINS = setOf("https://web.whatsapp.com", "https://web.telegram.org")
+
         /**
+         * Android WebView has no Web Notifications API. This shim gives the pages a granted
+         * Notification (and ServiceWorkerRegistration.showNotification) that forwards each
+         * message to MulticuentaBridge.notify, which posts a native Android notification.
+         */
+        private const val NOTIFICATION_JS = """(function(){
+  if (window.__mcNotify) return; window.__mcNotify = true;
+  function send(title, opts){
+    opts = opts || {};
+    try { MulticuentaBridge.notify(String(title || ''), String(opts.body || ''), String(opts.tag || '')); } catch (e) {}
+  }
+  function N(title, opts){ this.title = title; this.body = (opts || {}).body || ''; this.tag = (opts || {}).tag || ''; send(title, opts); }
+  N.permission = 'granted';
+  N.requestPermission = function(cb){ if (cb) cb('granted'); return Promise.resolve('granted'); };
+  N.prototype.close = function(){};
+  N.prototype.addEventListener = function(){};
+  N.prototype.removeEventListener = function(){};
+  window.Notification = N;
+  if (window.ServiceWorkerRegistration) {
+    ServiceWorkerRegistration.prototype.showNotification = function(t, o){ send(t, o); return Promise.resolve(); };
+  }
+  if (navigator.permissions && navigator.permissions.query) {
+    var query = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = function(d){
+      if (d && d.name === 'notifications') return Promise.resolve({ state: 'granted', onchange: null });
+      return query(d);
+    };
+  }
+})();"""        /**
          * Runs inside each service page (call with the service id). Every 1.5 s it posts to
          * MulticuentaBridge: whether the chat list is there (logged in), whether the login page
          * is showing, the login QR as a PNG data URL, and WhatsApp's pairing code (data-link-code).
@@ -1165,7 +1262,9 @@ class MainActivity : AppCompatActivity() {
     'html:has(#main) div:has(> #side){display:none!important}',
     '[role=dialog]{min-width:0!important;max-width:100vw!important}',
     '[data-testid="confirm-popup"] *{max-width:calc(100vw - 32px)!important;box-sizing:border-box}',
-    '[data-testid="drawer-fullscreen"],[data-testid="drawer-right"]{left:0!important;width:100vw!important;max-width:100vw!important}'
+    '[data-testid="drawer-fullscreen"],[data-testid="drawer-right"]{left:0!important;width:100vw!important;max-width:100vw!important}',
+    '[data-testid="drawer-left"],[data-testid="drawer-middle"]{border-left:0!important;left:0!important;width:100vw!important;max-width:100vw!important;min-width:0!important}',
+    'div:has(> #side){padding-left:0!important;border:0!important;box-shadow:none!important}'
   ].join('\n');
   function layout(mobile){
     var m = q('meta[name=viewport]');
