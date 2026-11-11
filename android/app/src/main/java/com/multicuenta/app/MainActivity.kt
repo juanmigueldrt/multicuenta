@@ -3,12 +3,18 @@ package com.multicuenta.app
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.text.Html
+import android.text.InputType
+import android.util.Base64
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -16,6 +22,7 @@ import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -29,6 +36,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -43,6 +51,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import org.json.JSONObject
 
 /**
  * Multichat for WhatsApp Web and Telegram Web, following design/multichat-m3.figcraft (Material 3):
@@ -54,6 +63,18 @@ class MainActivity : AppCompatActivity() {
 
     private enum class Screen { CHATS, ACCOUNTS, SETTINGS, LINK }
     private enum class Status { ACTIVE, ERROR }
+    private enum class LinkMode { QR, PHONE }
+    private enum class PhoneStage { FORM, WAITING, WEB }
+
+    /** What the account's web page reports through [Bridge]: login state, QR image, pairing code. */
+    private data class PageState(val logged: Boolean, val loginPage: Boolean, val qr: String?, val code: String?)
+
+    private val pageState = mutableMapOf<String, PageState>()
+    private val qrBitmaps = mutableMapOf<String, Bitmap>()
+    private var linkMode = LinkMode.QR
+    private var phoneStage = PhoneStage.FORM
+    private var linkPhone = ""
+    private var linkShowWeb = false
 
     private lateinit var store: AccountStore
     private val accounts = mutableListOf<Account>()
@@ -68,6 +89,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var chipsScroll: HorizontalScrollView
     private lateinit var chips: LinearLayout
     private lateinit var webHost: FrameLayout
+    private lateinit var placeholder: FrameLayout // native view shown in place of a web view
     private lateinit var linkHint: TextView
     private lateinit var chatsPane: LinearLayout
     private lateinit var pagePane: FrameLayout
@@ -95,6 +117,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = AccountStore(this)
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) WebView.setWebContentsDebuggingEnabled(true)
         accounts += store.load()
         activeId = store.activeId?.takeIf { id -> accounts.any { it.id == id } } ?: accounts.firstOrNull()?.id
 
@@ -116,7 +139,11 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(4), dp(16), dp(12))
             setBackgroundColor(SURFACE)
         }
-        webHost = FrameLayout(this).apply { setBackgroundColor(SURFACE) }
+        placeholder = FrameLayout(this).apply { setBackgroundColor(SURFACE); visibility = View.GONE }
+        webHost = FrameLayout(this).apply {
+            setBackgroundColor(SURFACE)
+            addView(placeholder, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
         chatsPane = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(chipsScroll, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -159,7 +186,7 @@ class MainActivity : AppCompatActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 when (screen) {
-                    Screen.LINK -> go(Screen.ACCOUNTS)
+                    Screen.LINK -> linkBack()
                     Screen.ACCOUNTS, Screen.SETTINGS -> go(Screen.CHATS)
                     Screen.CHATS -> {
                         val wv = activeId?.let { views[it] } as? WebView
@@ -187,7 +214,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun go(target: Screen) {
         screen = target
-        val showWeb = target == Screen.CHATS || target == Screen.LINK
+        // The link screen is native; the web page only shows when the user asks for it
+        val showWeb = target == Screen.CHATS || (target == Screen.LINK && linkShowWeb)
         chatsPane.visibility = if (showWeb) View.VISIBLE else View.GONE
         pagePane.visibility = if (showWeb) View.GONE else View.VISIBLE
         bottomNav.visibility = if (target == Screen.LINK) View.GONE else View.VISIBLE
@@ -198,20 +226,21 @@ class MainActivity : AppCompatActivity() {
             Screen.CHATS -> {
                 renderTopBar("Chats")
                 showWeb(activeId)
-                if (accounts.isEmpty()) showEmptyChats()
+                when {
+                    accounts.isEmpty() -> showEmptyChats()
+                    pageState[activeId]?.let { it.loginPage && !it.logged } == true -> showUnlinkedChats()
+                }
             }
             Screen.LINK -> {
                 val acc = accounts.firstOrNull { it.id == linkingId } ?: return go(Screen.ACCOUNTS)
                 renderTopBar("Vincular ${acc.service.label}", back = true, logo = logoRes(acc.service))
-                linkHint.text = when (acc.service) {
-                    Service.WHATSAPP ->
-                        "Escanea el código con WhatsApp en otro teléfono (Dispositivos vinculados). " +
-                            "Si es este mismo móvil, pulsa «Iniciar sesión con número de teléfono»."
-                    Service.TELEGRAM ->
-                        "Escanea el código desde Telegram › Ajustes › Dispositivos › Vincular dispositivo, " +
-                            "o entra con tu número de teléfono."
+                if (linkShowWeb) {
+                    linkHint.text = "Página de inicio de sesión de ${acc.service.label}. Pulsa ← para volver."
+                    showWeb(acc.id)
+                } else {
+                    ensureView(acc) // the page keeps running hidden and feeds the native screen
+                    renderLink(acc)
                 }
-                showWeb(acc.id)
             }
             Screen.ACCOUNTS -> {
                 renderTopBar("Cuentas")
@@ -225,15 +254,16 @@ class MainActivity : AppCompatActivity() {
         renderBottomNav()
     }
 
+    private fun ensureView(acc: Account): View = views.getOrPut(acc.id) {
+        createView(acc).also { webHost.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
+    }
+
     /** Shows [id]'s web view (created on first use) and hides every other one. */
     private fun showWeb(id: String?) {
         val acc = accounts.firstOrNull { it.id == id }
-        val view = acc?.let { a ->
-            views.getOrPut(a.id) {
-                createView(a).also { webHost.addView(it, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
-            }
-        }
+        val view = acc?.let { ensureView(it) }
         views.values.forEach { it.visibility = if (it === view) View.VISIBLE else View.GONE }
+        placeholder.visibility = View.GONE
         if (screen == Screen.CHATS && acc != null) {
             activeId = acc.id
             store.activeId = acc.id
@@ -246,7 +276,7 @@ class MainActivity : AppCompatActivity() {
     private fun renderTopBar(title: String, back: Boolean = false, logo: Int? = null) {
         topBar.removeAllViews()
         topBar.setPadding(dp(if (back) 4 else 16), 0, dp(4), 0)
-        if (back) topBar.addView(iconButton(R.drawable.ic_arrow_back, "Volver") { go(Screen.ACCOUNTS) })
+        if (back) topBar.addView(iconButton(R.drawable.ic_arrow_back, "Volver") { linkBack() })
         if (logo != null) {
             topBar.addView(ImageView(this).apply { setImageResource(logo) },
                 LinearLayout.LayoutParams(dp(28), dp(28)).apply { marginEnd = dp(12) })
@@ -346,6 +376,278 @@ class MainActivity : AppCompatActivity() {
         }, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
     }
 
+    /** Chats tab for an account that is not linked yet: native prompt instead of the web login page. */
+    private fun showUnlinkedChats() {
+        val acc = accounts.firstOrNull { it.id == activeId } ?: return
+        views[acc.id]?.visibility = View.GONE
+        placeholder.removeAllViews()
+        placeholder.visibility = View.VISIBLE
+        placeholder.bringToFront()
+        placeholder.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(32), 0, dp(32), 0)
+            addView(ImageView(this@MainActivity).apply { setImageResource(logoRes(acc.service)) },
+                LinearLayout.LayoutParams(dp(56), dp(56)).apply { bottomMargin = dp(16) })
+            addView(text("${acc.service.label} · ${acc.name} sin vincular", 22f, ON_SURFACE).apply { gravity = Gravity.CENTER })
+            addView(text("Vincula la cuenta para ver aquí sus chats.", 14f, ON_SURFACE_VARIANT).apply {
+                gravity = Gravity.CENTER
+                setPadding(0, dp(8), 0, dp(24))
+            })
+            addView(filledButton("Vincular ${acc.service.label}", brandButton(acc.service)) {
+                startLink(acc)
+            })
+        }, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+    }
+
+    private fun startLink(acc: Account) {
+        linkingId = acc.id
+        linkMode = LinkMode.QR
+        phoneStage = PhoneStage.FORM
+        linkShowWeb = false
+        go(Screen.LINK)
+    }
+
+    private fun linkBack() {
+        if (linkShowWeb) {
+            linkShowWeb = false
+            go(Screen.LINK)
+        } else {
+            go(Screen.ACCOUNTS)
+        }
+    }
+
+    // ---------------------------------------------------------------- native link screen
+
+    /** Native "Vincular" screen (design: Vincular · QR / Número / Código / Hecho). */
+    private fun renderLink(acc: Account) {
+        val state = pageState[acc.id]
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(16), dp(8), dp(16), dp(24))
+        }
+        linkHint.visibility = View.GONE
+        pagePane.setPadding(0, 0, 0, 0)
+
+        if (state?.logged == true) {
+            col.addView(successView(acc))
+        } else {
+            col.addView(segmented(acc), LinearLayout.LayoutParams(MATCH_PARENT, dp(40)).apply { bottomMargin = dp(24) })
+            when {
+                state?.code != null -> col.addView(codeView(acc, state.code))
+                linkMode == LinkMode.QR -> col.addView(qrView(acc))
+                phoneStage == PhoneStage.WAITING -> col.addView(waitingView("Pidiendo el código a ${acc.service.label}…"))
+                else -> col.addView(phoneForm(acc))
+            }
+            col.addView(textButton("Ver la página de inicio de sesión") {
+                linkShowWeb = true
+                go(Screen.LINK)
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(16) })
+        }
+        pagePane.removeAllViews()
+        pagePane.addView(ScrollView(this).apply { addView(col) }, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+    }
+
+    /** M3 segmented button: Código QR | Número. */
+    private fun segmented(acc: Account) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        background = rounded(SURFACE, 20, stroke = OUTLINE)
+        listOf(LinkMode.QR to "Código QR", LinkMode.PHONE to "Número").forEachIndexed { i, (mode, label) ->
+            val selected = linkMode == mode
+            val half = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                if (selected) {
+                    background = GradientDrawable().apply {
+                        setColor(SECONDARY_CONTAINER)
+                        val r = dp(20).toFloat()
+                        cornerRadii = if (i == 0) floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r)
+                        else floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
+                    }
+                    addView(icon(R.drawable.ic_check, ON_SECONDARY_CONTAINER, 18),
+                        LinearLayout.LayoutParams(dp(18), dp(18)).apply { marginEnd = dp(8) })
+                }
+                addView(text(label, 14f, if (selected) ON_SECONDARY_CONTAINER else ON_SURFACE, medium = true))
+                contentDescription = label
+                setOnClickListener {
+                    if (linkMode != mode) {
+                        linkMode = mode
+                        if (mode == LinkMode.QR && phoneStage != PhoneStage.FORM) {
+                            // Back to QR after starting the phone flow: reload the login page
+                            phoneStage = PhoneStage.FORM
+                            (views[acc.id] as? WebView)?.reload()
+                        }
+                        renderLink(acc)
+                    }
+                }
+            }
+            addView(half, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
+            if (i == 0) addView(View(this@MainActivity).apply { setBackgroundColor(OUTLINE) },
+                LinearLayout.LayoutParams(dp(1), MATCH_PARENT))
+        }
+    }
+
+    private fun qrView(acc: Account) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        val card = FrameLayout(this@MainActivity).apply {
+            background = rounded(SURFACE_LOWEST, 28)
+            elevation = dp(2).toFloat()
+            val bmp = qrBitmaps[acc.id]
+            if (bmp != null) {
+                addView(ImageView(this@MainActivity).apply {
+                    setImageBitmap(bmp)
+                    contentDescription = "Código QR para vincular ${acc.service.label}"
+                }, FrameLayout.LayoutParams(dp(224), dp(224), Gravity.CENTER))
+            } else {
+                addView(ProgressBar(this@MainActivity), FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
+            }
+        }
+        addView(card, LinearLayout.LayoutParams(dp(256), dp(256)).apply { topMargin = dp(24); bottomMargin = dp(24) })
+        addView(html(when (acc.service) {
+            Service.WHATSAPP -> "En WhatsApp, abre <b>Dispositivos vinculados</b> y escanea este código."
+            Service.TELEGRAM -> "En Telegram, abre <b>Ajustes › Dispositivos › Vincular dispositivo</b> y escanea este código."
+        }))
+        addView(text("¿Es este mismo móvil? Usa «Número».", 12f, ON_SURFACE_VARIANT).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, 0)
+        })
+    }
+
+    private fun phoneForm(acc: Account) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        val prefix = field("+34", InputType.TYPE_CLASS_PHONE)
+        val number = field("", InputType.TYPE_CLASS_PHONE).apply { hint = "612 345 678" }
+        if (linkPhone.isNotEmpty()) {
+            prefix.setText(linkPhone.substringBefore(' '))
+            number.setText(linkPhone.substringAfter(' ', ""))
+        }
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(labeled("Prefijo", prefix), LinearLayout.LayoutParams(dp(80), WRAP_CONTENT).apply { marginEnd = dp(8) })
+            addView(labeled("Número de teléfono", number), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        })
+        val label = if (acc.service == Service.WHATSAPP) "Obtener código" else "Continuar"
+        addView(filledButton(label, brandButton(acc.service)) {
+            val digits = number.text.toString().filter { it.isDigit() }
+            val pre = "+" + prefix.text.toString().filter { it.isDigit() }
+            if (digits.length < 6 || pre.length < 2) {
+                Toast.makeText(this@MainActivity, "Escribe el prefijo y el número", Toast.LENGTH_SHORT).show()
+                return@filledButton
+            }
+            linkPhone = "$pre $digits"
+            startPhoneLink(acc, pre + digits)
+        }, LinearLayout.LayoutParams(MATCH_PARENT, dp(48)).apply { topMargin = dp(16) })
+    }
+
+    private fun codeView(acc: Account, code: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        addView(text("Código para $linkPhone", 14f, ON_SURFACE_VARIANT).apply { setPadding(0, dp(24), 0, dp(16)) })
+        val chars = code.filter { it.isLetterOrDigit() }
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            chars.forEachIndexed { i, c ->
+                if (i == 4 && chars.length == 8) addView(text("–", 22f, ON_SURFACE_VARIANT).apply { setPadding(dp(4), 0, dp(4), 0) })
+                addView(text(c.toString(), 22f, ON_PRIMARY_CONTAINER, medium = true).apply {
+                    typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+                    gravity = Gravity.CENTER
+                    background = rounded(PRIMARY_CONTAINER, 8)
+                }, LinearLayout.LayoutParams(dp(34), dp(44)).apply { marginEnd = dp(4) })
+            }
+        })
+        addView(html(
+            "En ${acc.service.label}, abre <b>Dispositivos vinculados › Vincular con número</b> e introduce el código."
+        ).apply { setPadding(0, dp(24), 0, 0) })
+        addView(textButton("Cambiar número") {
+            phoneStage = PhoneStage.FORM
+            pageState[acc.id] = PageState(false, true, null, null)
+            (views[acc.id] as? WebView)?.reload()
+            renderLink(acc)
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(16) })
+    }
+
+    private fun successView(acc: Account) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(0, dp(120), 0, 0)
+        addView(FrameLayout(this@MainActivity).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(SUCCESS_CONTAINER) }
+            addView(icon(R.drawable.ic_check, ON_SUCCESS_CONTAINER, 32), FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
+        }, LinearLayout.LayoutParams(dp(64), dp(64)))
+        addView(text("Cuenta vinculada", 22f, ON_SURFACE).apply { setPadding(0, dp(16), 0, dp(8)) })
+        addView(text("${acc.service.label} · ${acc.name} ya aparece en tus chats.", 14f, ON_SURFACE_VARIANT).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(24))
+        })
+        addView(filledButton("Hecho", PRIMARY) {
+            activeId = acc.id
+            go(Screen.CHATS)
+        })
+    }
+
+    private fun waitingView(message: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(0, dp(48), 0, 0)
+        addView(ProgressBar(this@MainActivity), LinearLayout.LayoutParams(dp(40), dp(40)))
+        addView(text(message, 14f, ON_SURFACE_VARIANT).apply { setPadding(0, dp(16), 0, 0) })
+    }
+
+    /** Drives the web page's own phone-number login; the code comes back through [Bridge]. */
+    private fun startPhoneLink(acc: Account, phone: String) {
+        val wv = views[acc.id] as? WebView ?: return
+        phoneStage = PhoneStage.WAITING
+        renderLink(acc)
+        wv.evaluateJavascript("window.__mcPhone && window.__mcPhone(${JSONObject.quote(phone)});", null)
+    }
+
+    // ---------------------------------------------------------------- page bridge
+
+    /** Receives the page state posted by [PAGE_JS]; runs on a WebView thread. */
+    private inner class Bridge(private val id: String) {
+        @JavascriptInterface
+        fun post(json: String) = runOnUiThread { onPageState(id, json) }
+
+        @JavascriptInterface
+        fun phoneFailed(step: String) = runOnUiThread { onPhoneFailed(id, step) }
+    }
+
+    private fun onPageState(id: String, json: String) {
+        val o = try { JSONObject(json) } catch (e: org.json.JSONException) { return }
+        val next = PageState(
+            o.optBoolean("logged"),
+            o.optBoolean("loginPage"),
+            o.optString("qr").takeIf { it.startsWith("data:image") },
+            o.optString("code").takeIf { it.isNotBlank() && it != "null" },
+        )
+        val prev = pageState[id]
+        if (prev == next) return
+        pageState[id] = next
+        if (next.qr != null && next.qr != prev?.qr) {
+            val bytes = Base64.decode(next.qr.substringAfter(','), Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { qrBitmaps[id] = it }
+        }
+        if (next.logged != prev?.logged) setStatus(id, if (next.logged) Status.ACTIVE else null)
+        val acc = accounts.firstOrNull { it.id == id } ?: return
+        when {
+            screen == Screen.LINK && linkingId == id && !linkShowWeb -> renderLink(acc)
+            screen == Screen.CHATS && activeId == id &&
+                (next.logged != prev?.logged || next.loginPage != prev?.loginPage) -> go(Screen.CHATS)
+        }
+    }
+
+    private fun onPhoneFailed(id: String, step: String) {
+        if (linkingId != id || screen != Screen.LINK) return
+        // The page changed and the automation can't find its controls: let the user finish in the page
+        phoneStage = PhoneStage.WEB
+        linkShowWeb = true
+        Toast.makeText(this, "Termina la vinculación en la página ($step)", Toast.LENGTH_LONG).show()
+        go(Screen.LINK)
+    }
+
     private fun renderAccounts() {
         val list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -390,7 +692,10 @@ class MainActivity : AppCompatActivity() {
             Status.ACTIVE -> addView(statusChip("Activa", R.drawable.ic_check, SUCCESS_CONTAINER, ON_SUCCESS_CONTAINER))
             Status.ERROR -> addView(statusChip("Reconectar", R.drawable.ic_sync_problem, ERROR_CONTAINER, ON_ERROR_CONTAINER)
                 .apply { setOnClickListener { (views[acc.id] as? WebView)?.reload() } })
-            null -> Unit
+            null -> if (pageState[acc.id]?.loginPage == true) {
+                addView(statusChip("Vincular", R.drawable.ic_sync_problem, SECONDARY_CONTAINER, ON_SECONDARY_CONTAINER)
+                    .apply { setOnClickListener { startLink(acc) } })
+            }
         }
         addView(iconButton(R.drawable.ic_more_vert, "Opciones de ${acc.name}") { anchor -> accountMenu(acc, anchor) })
         setOnClickListener { activeId = acc.id; go(Screen.CHATS) }
@@ -433,8 +738,7 @@ class MainActivity : AppCompatActivity() {
         accounts += acc
         store.save(accounts)
         if (activeId == null) activeId = acc.id
-        linkingId = acc.id
-        go(Screen.LINK)
+        startLink(acc)
     }
 
     private fun accountMenu(acc: Account, anchor: View) {
@@ -447,7 +751,7 @@ class MainActivity : AppCompatActivity() {
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
                     0 -> { activeId = acc.id; go(Screen.CHATS) }
-                    1 -> { linkingId = acc.id; go(Screen.LINK) }
+                    1 -> startLink(acc)
                     2 -> (views[acc.id] as? WebView)?.reload()
                     3 -> rename(acc)
                     4 -> confirmDelete(acc)
@@ -567,11 +871,11 @@ class MainActivity : AppCompatActivity() {
                 // WhatsApp's desktop page uses width=device-width and gets cut off on a phone.
                 // A fixed layout width lets the wide viewport zoom the whole page to fit.
                 if (acc.service == Service.WHATSAPP) view.evaluateJavascript(FIT_DESKTOP_JS, null)
-                if (status[acc.id] != Status.ERROR) setStatus(acc.id, Status.ACTIVE)
+                view.evaluateJavascript("($PAGE_JS)(${JSONObject.quote(acc.service.id)});", null)
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
-                status.remove(acc.id)
+                if (status[acc.id] == Status.ERROR) setStatus(acc.id, null)
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -621,13 +925,14 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        wv.addJavascriptInterface(Bridge(acc.id), "MulticuentaBridge")
         wv.loadUrl(acc.service.url)
         return wv
     }
 
-    private fun setStatus(id: String, s: Status) {
+    private fun setStatus(id: String, s: Status?) {
         if (status[id] == s) return
-        status[id] = s
+        if (s == null) status.remove(id) else status[id] = s
         if (screen == Screen.ACCOUNTS) renderAccounts()
     }
 
@@ -690,12 +995,45 @@ class MainActivity : AppCompatActivity() {
         setOnClickListener { addAccount(svc) }
     }
 
-    private fun filledButton(label: String, onClick: () -> Unit) = text(label, 14f, 0xFFFFFFFF.toInt(), medium = true).apply {
+    private fun filledButton(label: String, color: Int = PRIMARY, onClick: () -> Unit) =
+        text(label, 14f, 0xFFFFFFFF.toInt(), medium = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(24), dp(12), dp(24), dp(12))
+            background = rounded(color, 24)
+            setOnClickListener { onClick() }
+        }
+
+    private fun textButton(label: String, onClick: () -> Unit) = text(label, 14f, PRIMARY, medium = true).apply {
         gravity = Gravity.CENTER
-        setPadding(dp(24), dp(12), dp(24), dp(12))
-        background = rounded(PRIMARY, 24)
+        setPadding(dp(12), dp(10), dp(12), dp(10))
         setOnClickListener { onClick() }
     }
+
+    private fun html(s: String) = TextView(this).apply {
+        text = Html.fromHtml(s, Html.FROM_HTML_MODE_COMPACT)
+        textSize = 14f
+        setTextColor(ON_SURFACE_VARIANT)
+        gravity = Gravity.CENTER
+    }
+
+    /** M3 outlined text field (radius 4). */
+    private fun field(value: String, type: Int) = EditText(this).apply {
+        setText(value)
+        inputType = type
+        setSingleLine()
+        textSize = 16f
+        setTextColor(ON_SURFACE)
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        background = rounded(SURFACE, 4, stroke = OUTLINE)
+    }
+
+    private fun labeled(label: String, field: View) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(text(label, 12f, ON_SURFACE_VARIANT).apply { setPadding(dp(4), 0, 0, dp(4)) })
+        addView(field, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+    }
+
+    private fun brandButton(svc: Service) = if (svc == Service.WHATSAPP) WHATSAPP_DARK else PRIMARY
 
     private fun settingRow(title: String, value: String) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -761,12 +1099,72 @@ class MainActivity : AppCompatActivity() {
         private const val SECONDARY_CONTAINER = 0xFFD7E3F7.toInt()
         private const val ON_SECONDARY_CONTAINER = 0xFF101C2B.toInt()
         private const val OUTLINE_VARIANT = 0xFFC3C7CF.toInt()
+        private const val OUTLINE = 0xFF73777F.toInt()
+        private const val PRIMARY_CONTAINER = 0xFFD1E4FF.toInt()
+        private const val ON_PRIMARY_CONTAINER = 0xFF001D36.toInt()
+        private const val WHATSAPP_DARK = 0xFF103928.toInt()
         private const val SUCCESS_CONTAINER = 0xFFC8F0D2.toInt()
         private const val ON_SUCCESS_CONTAINER = 0xFF00210C.toInt()
         private const val ERROR_CONTAINER = 0xFFFFDAD6.toInt()
         private const val ON_ERROR_CONTAINER = 0xFF410002.toInt()
 
         private val SERVICE_HOSTS = listOf("whatsapp.com", "whatsapp.net", "telegram.org")
+        /**
+         * Runs inside each service page (call with the service id). Every 1.5 s it posts to
+         * MulticuentaBridge: whether the chat list is there (logged in), whether the login page
+         * is showing, the login QR as a PNG data URL, and WhatsApp's pairing code (data-link-code).
+         * window.__mcPhone(number) drives the page's own "log in with phone number" form.
+         */
+        private const val PAGE_JS = """function(svc){
+  if (window.__mcPoll) return;
+  function q(s){ return document.querySelector(s); }
+  function byText(re){
+    var els = document.querySelectorAll('[role=button], button, a, span, div');
+    for (var i = els.length - 1; i >= 0; i--) {
+      var e = els[i];
+      if (e.children.length <= 2 && re.test((e.textContent || '').trim())) return e;
+    }
+    return null;
+  }
+  function setValue(el, v){
+    if (el.isContentEditable) { el.textContent = v; }
+    else { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, v); }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  window.__mcPhone = function(num){
+    var step = 0, tries = 0;
+    var t = setInterval(function(){
+      if (++tries > 40) { clearInterval(t); MulticuentaBridge.phoneFailed('paso ' + step); return; }
+      if (step === 0) {
+        var l = byText(/n[uú]mero de tel[eé]fono|phone number/i);
+        if (l) {
+          l.click(); step = 1;
+          if (svc !== 'whatsapp') { clearInterval(t); MulticuentaBridge.phoneFailed('Telegram'); }
+        }
+      } else if (step === 1) {
+        var inp = q('input[type=text], input[type=tel], input:not([type])');
+        if (inp) { inp.focus(); setValue(inp, num); step = 2; }
+      } else if (step === 2) {
+        var b = byText(/^(siguiente|next)$/i);
+        if (b) { b.click(); clearInterval(t); }
+      }
+    }, 500);
+  };
+  window.__mcPoll = setInterval(function(){
+    try {
+      var s = { logged: false, loginPage: false, qr: null, code: null };
+      var c = q('[data-link-code]');
+      if (c) s.code = c.getAttribute('data-link-code');
+      var cv = q('canvas');
+      if (!s.code && cv && cv.width >= 100 && !q('#pane-side, #side, #column-left .chatlist')) {
+        s.qr = cv.toDataURL('image/png');
+      }
+      s.loginPage = !!(s.qr || s.code || (svc !== 'whatsapp' && q('#auth-pages .tabs-tab.active')));
+      s.logged = !s.loginPage && !!(svc === 'whatsapp' ? q('#pane-side, #side') : q('#column-left'));
+      MulticuentaBridge.post(JSON.stringify(s));
+    } catch (e) {}
+  }, 1500);
+}"""
         private const val FIT_DESKTOP_JS = """(function(){
   var m = document.querySelector('meta[name=viewport]');
   if (!m) { m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
