@@ -1316,6 +1316,8 @@ class MainActivity : AppCompatActivity() {
     '[data-testid="drawer-fullscreen"],[data-testid="drawer-right"]{left:0!important;width:100vw!important;max-width:100vw!important}',
     '[data-testid="drawer-left"],[data-testid="drawer-middle"]{border-left:0!important;left:0!important;width:100vw!important;max-width:100vw!important;min-width:0!important}',
     'div:has(> #side){padding-left:0!important;border:0!important;box-shadow:none!important}',
+    // Message rows keep desktop gutters (62px/57px) that cut wide bubbles on a phone
+    '#main [role=row] > * > * > * > *{padding-left:10px!important;padding-right:10px!important}',
     // Call buttons: WebView has no cross-origin isolation, so WhatsApp disables them; give the room to the name
     '#main header span:has(> div > button[aria-disabled=true]), #main header button[aria-disabled=true]{display:none!important}',
     // Emoji panel is a fixed 12-column popover (560px) centred on its button: pin it left, fit the width
