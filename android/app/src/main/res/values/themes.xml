@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Material 3 palette from design/multichat-m3.figcraft -->
     <style name="Theme.Multicuenta" parent="Theme.AppCompat.Light.NoActionBar">
-        <item name="colorPrimary">#00A884</item>
-        <item name="colorPrimaryDark">#0B141A</item>
-        <item name="colorAccent">#00A884</item>
-        <item name="android:statusBarColor">#0B141A</item>
-        <item name="android:navigationBarColor">#0B141A</item>
-        <item name="android:windowBackground">#F0F2F5</item>
+        <item name="colorPrimary">#36618E</item>
+        <item name="colorPrimaryDark">#F8F9FF</item>
+        <item name="colorAccent">#36618E</item>
+        <item name="android:statusBarColor">#F8F9FF</item>
+        <item name="android:navigationBarColor">#ECEEF4</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowBackground">#F8F9FF</item>
     </style>
 </resources>
