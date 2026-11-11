@@ -33,6 +33,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -95,10 +97,22 @@ class MainActivity : AppCompatActivity() {
         }
         content = FrameLayout(this).apply { setBackgroundColor(GREY) }
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(DARK)
+        }
         root.addView(railScroll, LinearLayout.LayoutParams(dp(72), MATCH_PARENT))
         root.addView(content, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
         setContentView(root)
+        // Android 15 draws edge-to-edge: keep the UI clear of status/navigation bars and the keyboard
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or
+                    WindowInsetsCompat.Type.ime()
+            )
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            WindowInsetsCompat.CONSUMED
+        }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -170,6 +184,12 @@ class MainActivity : AppCompatActivity() {
                 if (isServiceHost(request.url.host)) return false
                 openExternal(request.url)
                 return true
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                // WhatsApp's desktop page uses width=device-width and gets cut off on a phone.
+                // A fixed layout width lets the wide viewport zoom the whole page to fit.
+                if (acc.service == Service.WHATSAPP) view.evaluateJavascript(FIT_DESKTOP_JS, null)
             }
         }
         wv.webChromeClient = object : WebChromeClient() {
@@ -436,6 +456,11 @@ class MainActivity : AppCompatActivity() {
         private const val DARK = 0xFF0B141A.toInt()
         private const val GREY = 0xFFF0F2F5.toInt()
         private val SERVICE_HOSTS = listOf("whatsapp.com", "whatsapp.net", "telegram.org")
+        private const val FIT_DESKTOP_JS = """(function(){
+  var m = document.querySelector('meta[name=viewport]');
+  if (!m) { m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
+  m.content = 'width=900';
+})();"""
         private const val DESKTOP_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     }
