@@ -15,7 +15,25 @@ android {
         versionName = "0.1.0"
     }
 
+    // Same key on every CI build, so a new APK can update the installed one.
+    // CI passes it via secrets; without them Gradle falls back to a throwaway debug key.
+    val keystorePath: String? = System.getenv("ANDROID_KEYSTORE_FILE")
+    signingConfigs {
+        if (keystorePath != null) {
+            create("shared") {
+                storeFile = file(keystorePath)
+                storeType = "pkcs12"
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = "multicuenta"
+                keyPassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (keystorePath != null) signingConfig = signingConfigs.getByName("shared")
+        }
         release {
             isMinifyEnabled = false
         }
